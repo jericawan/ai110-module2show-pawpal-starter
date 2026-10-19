@@ -5,14 +5,16 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
 I would include Owner, pet, and. scheduler class. In owner I would include name, and availability. For pet I would include name, age, gender, species  requirements and priority. Lastly for scheduler I would include done or not andcreate a daily plan. 
+- What classes did you include, and what responsibilities did you assign to each?
+I included 4 classes, owner, pet, task and scheduler. The owner class will show their availability with their list of pets. They have the availibility to add or remove tasks, and check whether it is done. The pet class include the general information (name, age, breed), then each pet would have an individual list of tasks that they need to have done and by what time, while including the priority of the task. After the task  class just explains the attributes of the class and whether it was complete. Lastly we have the scheduler which will create a daily plan for the owners including a checklist. 
+
 
 **b. Design changes**
 
 - Did your design change during implementation?
 - If yes, describe at least one change and why you made it.
-
+I did make a lot of changes during implementation. One in particular is changing the way I implemented multiple people owning the same animals. Scheduler will now has household which is a class with multiple people who can complete the task.  
 ---
 
 ## 2. Scheduling Logic and Tradeoffs

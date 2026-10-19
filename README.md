@@ -47,7 +47,8 @@ pip install -r requirements.txt
 Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
 
 Today's Schedule
-========================================
+===========================
+=============
 07:30 AM - 08:00 AM  Morning walk (Biscuit) [priority 1]
 08:15 AM - 08:25 AM  Breakfast (Mochi) [priority 1]
 12:00 PM - 12:05 PM  Joint medicine (Biscuit) [priority 1]
@@ -56,6 +57,8 @@ Today's Schedule
 08:00 PM - 08:15 PM  Brushing (Mochi) [priority 3]
 
 ## 🧪 Testing PawPal+
+Phase 2 Step 4:
+The Task class represents a single  activity. It stores how long the task takes, how important it is, and when it needs to be done, and it keeps track of whether it has been completed and by whom. The Pet class holds each animal's information and the list of tasks it requires. It can update the pet's priority and show which of its tasks are still unfinished. The Owner class represents one person in the household and manages their availability, including when they will be home and how much time they have for pet care. The Household class brings everyone together: it adds people and pets, and it lets members add, edit, assign, complete, and remove tasks. Finally, the Scheduler organizes the day. It assigns tasks to whoever is available, builds a timed daily plan and checklist, and explains why any tasks were skipped.
 
 ```bash
 # Run the full test suite:

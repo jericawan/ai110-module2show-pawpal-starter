@@ -252,6 +252,7 @@ class Scheduler:
     """Organizes a household's tasks into a daily plan, reading tasks from each owner."""
 
     def __init__(self, household: Household):
+        """Start with an empty plan and skipped list for the given household."""
         self.household = household
         self.daily_plan: list[ScheduledTask] = []
         self.skipped: list[tuple[Task, str]] = []  # (task, why it was skipped)
@@ -294,6 +295,7 @@ class Scheduler:
         busy: list[tuple[int, int]] = []  # (start, end) minutes already booked
 
         def is_free(start: int, end: int) -> bool:
+            """Return True if start-end doesn't overlap any booked slot."""
             return all(end <= b_start or start >= b_end for b_start, b_end in busy)
 
         for task in sorted(owner.pending_tasks(day), key=self._sort_key):

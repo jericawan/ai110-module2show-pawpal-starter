@@ -36,14 +36,16 @@ I did make a lot of changes during implementation. One in particular is changing
 **a. How you used AI**
 
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
+I used AI to understand the questions being asked, then once I fully understand the prompt I started designing. After designing I asked AI how I can improve the overall designs and what important factors I am missing. 
 - What kinds of prompts or questions were most helpful?
+Questions that were helpful were the ones that included explainations on why AI choose to to go with one decision versus the other. Reading through the code and questioning the decisions of AI helped fix minor logical mistakes within the first wave of changes. 
 
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
 
----
+I decided not to do an AI suggestion was at the time availability attribute. In one of the tests it stated that "Jo" waw available from 7-9 am but the available_minutes was 60 minutes. I decided against this and have it reflect the same amount of time because it logically did not make sense. 
 
 ## 4. Testing and Verification
 

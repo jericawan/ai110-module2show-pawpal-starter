@@ -1,0 +1,57 @@
+classDiagram
+    %% Keep this file updated so it matches your final implementation.
+    %% Task.priority: int, 1 = most important (higher number = lower priority)
+
+    class Owner {
+        +str name
+        +int available_minutes
+        +time home_start
+        +time home_end
+        +list~Pet~ pets
+        +add_pet(pet: Pet) None
+        +update_availability(minutes: int) None
+        +update_home_hours(start: time, end: time) None
+        +is_home_at(t: time) bool
+        +check_off_task(task: Task) None
+    }
+
+    class Pet {
+        +str name
+        +str breed
+        +str gender
+        +int age
+        +date birthday
+        +list~str~ special_needs
+        +str priority
+        +list~Task~ required_tasks
+        +dict~str, time~ time_constraints
+        +add_task(task: Task) None
+        +add_time_constraint(task_name: str, at: time) None
+        +create_impending_task(name: str, duration: int, reason: str) Task
+        +change_priority(new_priority: str) None
+    }
+
+    class Task {
+        +str name
+        +str assigned_to
+        +int duration_minutes
+        +int priority
+        +bool completed
+        +mark_complete() None
+    }
+
+    class Scheduler {
+        +Owner owner
+        +list~Task~ daily_plan
+        +list~Task~ checklist
+        +list~Task~ skipped
+        +create_daily_plan() list~Task~
+        +create_checklist() list~Task~
+        +add_to_checklist(task: Task) None
+        +explain_plan() str
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : requires
+    Scheduler --> Owner : plans for
+    Scheduler --> Task : schedules

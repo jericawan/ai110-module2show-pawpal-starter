@@ -6,6 +6,7 @@
 
 - Briefly describe your initial UML design.
 - What classes did you include, and what responsibilities did you assign to each?
+I would include Owner, pet, and. scheduler class. In owner I would include name, and availability. For pet I would include name, age, gender, species  requirements and priority. Lastly for scheduler I would include done or not andcreate a daily plan. 
 
 **b. Design changes**
 

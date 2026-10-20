@@ -95,3 +95,18 @@ Describe your app in numbered steps so a reader can follow along without watchin
 5. <!-- Add more steps as needed -->
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+## Testing PawPal+
+(.venv) (base) jericawan@Mac project_2_ai110 % python -m pytest
+============================ test session starts =============================
+platform darwin -- Python 3.14.2, pytest-9.1.1, pluggy-1.7.0
+rootdir: /Users/jericawan/Desktop/codepath26/AI110/project_2_ai110
+plugins: anyio-4.15.1
+collected 77 items                                                           
+
+tests/test_pawpal.py ................................................. [ 63%]
+............................                                           [100%]
+
+============================= 77 passed in 0.04s =============================
+
+
+Confidence Level:3

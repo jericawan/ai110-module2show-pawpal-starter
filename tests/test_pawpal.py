@@ -649,3 +649,243 @@ def test_sort_by_time_shows_double_booked_tasks_side_by_side(home):
     assert scheduler.sort_by_time() == [feed, grooming, vet_call]
     assert len(scheduler.warnings) == 1
     assert "Grooming" in scheduler.warnings[0] and "Vet call" in scheduler.warnings[0]
+
+
+# --- Edge cases: recurring tasks ---
+
+
+def test_overdue_daily_task_next_copy_counts_from_completion_day(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit], frequency="daily", due_date=date(2026, 10, 10))
+    household.add_task(walk, assigned_to=jo)
+
+    next_walk = household.check_off_task(walk, by=jo, on=DAY)
+
+    # done late on Oct 18, so the next one is due Oct 19, not Oct 11
+    assert next_walk.due_date == date(2026, 10, 19)
+    assert not next_walk.is_pending_on(DAY)
+
+
+def test_weekly_task_is_pending_from_due_date_until_done():
+    bath = Task("Bath", 20, 2, frequency="weekly", due_date=DAY)
+
+    assert not bath.is_pending_on(date(2026, 10, 17))
+    assert bath.is_pending_on(DAY)
+    assert bath.is_pending_on(date(2026, 10, 21))  # overdue still shows up
+
+
+def test_weekly_task_repeats_across_new_year(home):
+    household, jo, _, _, mochi = home
+    bath = Task("Bath", 20, 2, pets=[mochi], frequency="weekly", due_date=date(2026, 12, 28))
+    household.add_task(bath, assigned_to=jo)
+
+    next_bath = household.check_off_task(bath, by=jo, on=date(2026, 12, 28))
+
+    assert next_bath.due_date == date(2027, 1, 4)
+
+
+def test_next_copy_has_its_own_pets_list(home):
+    household, jo, _, biscuit, mochi = home
+    walk = Task("Walk", 30, 1, pets=[biscuit], frequency="daily", due_date=DAY)
+    household.add_task(walk, assigned_to=jo)
+
+    next_walk = household.check_off_task(walk, by=jo, on=DAY)
+    next_walk.pets.append(mochi)
+
+    assert walk.pets == [biscuit]
+
+
+def test_repeating_task_without_due_date_starts_today():
+    walk = Task("Walk", 30, 1, frequency="daily")
+    assert walk.due_date == date.today()
+
+
+def test_not_completed_filter_leaves_out_tomorrows_copy(home):
+    household, jo, _, biscuit, mochi = home
+    walk = Task("Walk", 30, 1, pets=[biscuit], frequency="daily", due_date=DAY)
+    feed = Task("Feed", 10, 1, pets=[mochi])
+    household.add_task(walk, assigned_to=jo)
+    household.add_task(feed, assigned_to=jo)
+    next_walk = household.check_off_task(walk, by=jo, on=DAY)
+
+    scheduler = Scheduler(household)
+
+    assert scheduler.filter_tasks(completed=False, day=DAY) == [feed]  # tomorrow's walk isn't due
+    assert next_walk in scheduler.filter_tasks(completed=False, day=date(2026, 10, 19))
+
+
+# --- Edge cases: home hours ---
+
+
+def test_tasks_at_the_edges_of_home_hours_fit(home):
+    household, jo, _, biscuit, mochi = home  # Jo home 7-9 AM
+    household.add_task(Task("Feed", 10, 1, pets=[mochi]), due_time=time(7, 0), assigned_to=jo)
+    household.add_task(Task("Walk", 30, 1, pets=[biscuit]), due_time=time(8, 30), assigned_to=jo)
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert planned_names(scheduler) == ["Feed", "Walk"]  # Walk ends exactly at 9:00
+
+
+def test_task_ending_one_minute_after_home_hours_is_skipped(home):
+    household, jo, _, biscuit, _ = home
+    household.add_task(Task("Walk", 30, 1, pets=[biscuit]), due_time=time(8, 31), assigned_to=jo)
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert skipped_names(scheduler) == ["Walk"]
+
+
+def test_owner_without_home_hours_can_do_late_task():
+    pat = Owner("Pat")  # no home hours = always home
+    dog = Pet("Rex")
+    household = Household("Pat's")
+    household.add_member(pat)
+    household.add_pet(dog)
+    household.add_task(Task("Late walk", 20, 1, pets=[dog]), due_time=time(22, 0))
+
+    scheduler = Scheduler(household)
+    plan = scheduler.create_daily_plan(DAY)
+
+    assert planned_names(scheduler) == ["Late walk"]
+    assert plan[0].start_time == time(22, 0)
+
+
+def test_unassigned_task_goes_to_member_home_for_the_whole_task(home):
+    household, jo, sam, biscuit, _ = home  # Jo home until 9:00
+    sam.update_home_hours(time(8, 30), time(10, 0))  # Sam has less free time than Jo
+    walk = Task("Walk", 20, 1, pets=[biscuit])
+    household.add_task(walk, due_time=time(8, 50))  # would run past Jo's 9:00
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert walk.assigned_to is sam
+    assert planned_names(scheduler) == ["Walk"]
+    assert scheduler.skipped == []
+
+
+def test_owner_rejects_home_start_after_home_end():
+    with pytest.raises(ValueError):
+        Owner("Jo", home_start=time(18, 0), home_end=time(9, 0))
+
+
+# --- Edge cases: slots and conflicts ---
+
+
+def test_flexible_task_fills_gap_before_fixed_task(home):
+    household, jo, _, biscuit, mochi = home
+    household.add_task(Task("Meds", 10, 1, pets=[biscuit]), due_time=time(7, 30), assigned_to=jo)
+    household.add_task(Task("Play", 30, 2, pets=[mochi]), assigned_to=jo)
+
+    scheduler = Scheduler(household)
+    plan = scheduler.create_daily_plan(DAY)
+
+    assert [(item.task.name, item.start_time) for item in plan] == [
+        ("Play", time(7, 0)),
+        ("Meds", time(7, 30)),
+    ]
+
+
+def test_flexible_task_skipped_when_no_gap_is_long_enough(home):
+    household, jo, _, biscuit, mochi = home  # Jo 7-9 AM
+    household.add_task(Task("Vet call", 60, 1, pets=[biscuit]), due_time=time(7, 30), assigned_to=jo)
+    household.add_task(Task("Bath", 45, 2, pets=[mochi]), assigned_to=jo)  # gaps are only 30 min
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert planned_names(scheduler) == ["Vet call"]
+    assert "no free 45-min slot" in scheduler.skipped[0][1]
+
+
+def test_one_minute_overlap_is_a_conflict(home):
+    household, jo, sam, biscuit, _ = home
+    sam.update_home_hours(time(7, 0), time(22, 0))
+    household.add_task(Task("Walk", 30, 1, pets=[biscuit]), due_time=time(8, 0), assigned_to=jo)
+    household.add_task(Task("Bath", 20, 1, pets=[biscuit]), due_time=time(8, 29), assigned_to=sam)
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert len(scheduler.warnings) == 1
+
+
+def test_flexible_task_avoids_time_pet_is_busy_with_someone_else(home):
+    household, jo, sam, biscuit, _ = home
+    sam.update_home_hours(time(7, 0), time(22, 0))
+    household.add_task(Task("Vet call", 30, 1, pets=[biscuit]), due_time=time(7, 0), assigned_to=sam)
+    household.add_task(Task("Brush", 30, 2, pets=[biscuit]), assigned_to=jo)
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    brush = next(item for item in scheduler.daily_plan if item.task.name == "Brush")
+    assert brush.start_time == time(7, 30)  # waits until Biscuit is back from the vet call
+    assert scheduler.warnings == []
+
+
+# --- Edge cases: input checks ---
+
+
+@pytest.mark.parametrize("minutes", [0, -10])
+def test_task_rejects_non_positive_duration(minutes):
+    with pytest.raises(ValueError):
+        Task("Walk", minutes, 1)
+
+
+def test_task_rejects_non_positive_duration_when_edited(home):
+    household, _, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    household.add_task(walk)
+
+    with pytest.raises(ValueError):
+        household.edit_task(walk, duration_minutes=0)
+    assert walk.duration_minutes == 30
+
+
+def test_owner_with_only_start_time_is_home_from_then_on():
+    jo = Owner("Jo", home_start=time(9, 0))
+
+    assert not jo.is_home_at(time(8, 0))
+    assert jo.is_home_at(time(22, 0))
+
+
+def test_task_running_past_midnight_is_skipped_without_crashing():
+    pat = Owner("Pat")  # home all day, until 23:59
+    dog = Pet("Rex")
+    household = Household("Pat's")
+    household.add_member(pat)
+    household.add_pet(dog)
+    household.add_task(Task("Night walk", 30, 1, pets=[dog]), due_time=time(23, 45))
+
+    scheduler = Scheduler(household)
+    scheduler.create_daily_plan(DAY)
+
+    assert skipped_names(scheduler) == ["Night walk"]
+
+
+def test_daily_task_done_on_time_is_due_the_next_day(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit], frequency="daily", due_date=DAY)
+    household.add_task(walk, assigned_to=jo)
+
+    next_walk = household.check_off_task(walk, by=jo, on=DAY)
+    third_walk = household.check_off_task(next_walk, by=jo, on=date(2026, 10, 19))
+
+    assert third_walk.due_date == date(2026, 10, 20)
+
+
+def test_fixed_tasks_for_the_same_pet_still_warn_instead_of_moving(home):
+    household, jo, sam, biscuit, _ = home
+    sam.update_home_hours(time(7, 0), time(22, 0))
+    household.add_task(Task("Walk", 30, 1, pets=[biscuit]), due_time=time(8, 0), assigned_to=jo)
+    household.add_task(Task("Bath", 20, 1, pets=[biscuit]), due_time=time(8, 15), assigned_to=sam)
+
+    scheduler = Scheduler(household)
+    plan = scheduler.create_daily_plan(DAY)
+
+    assert [item.start_time for item in plan] == [time(8, 0), time(8, 15)]
+    assert len(scheduler.warnings) == 1

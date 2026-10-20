@@ -7,8 +7,9 @@ from datetime import date, time, timedelta
 from typing import Optional
 
 # Planning window used when a person hasn't set home hours ("always home").
-DEFAULT_DAY_START = time(8, 0)
-DEFAULT_DAY_END = time(21, 0)
+# Ends at 23:59, not midnight, since time(24, 0) isn't a valid time.
+DEFAULT_DAY_START = time(0, 0)
+DEFAULT_DAY_END = time(23, 59)
 
 # How far ahead the next copy of a repeating task is due.
 REPEAT_INTERVALS = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
@@ -41,7 +42,9 @@ class Task:
     due_date: Optional[date] = None  # None = undated; repeating tasks default to today
 
     def __post_init__(self) -> None:
-        """Check frequency and give repeating tasks a due date to count from."""
+        """Check duration and frequency, and give repeating tasks a due date to count from."""
+        if self.duration_minutes <= 0:
+            raise ValueError("Duration must be at least 1 minute.")
         if self.frequency is not None and self.frequency not in REPEAT_INTERVALS:
             raise ValueError(f"Frequency must be one of {list(REPEAT_INTERVALS)} or None.")
         if self.frequency is not None and self.due_date is None:
@@ -80,9 +83,11 @@ class Task:
 
         How it works:
             1. One-time tasks (frequency None) don't repeat, so return None.
-            2. Otherwise copy the task, moving due_date forward by one day
-               ("daily") or seven days ("weekly") using REPEAT_INTERVALS.
-            3. Clear the completion record so the copy starts out not done.
+            2. Count from the due date, or from the day it was done if that's
+               later, so a task done late doesn't leave an overdue copy behind.
+            3. Copy the task, moving that day forward by one day ("daily") or
+               seven days ("weekly") using REPEAT_INTERVALS.
+            4. Clear the completion record so the copy starts out not done.
 
         The copy has no owner yet; Household.check_off_task adds and assigns it.
 
@@ -91,10 +96,11 @@ class Task:
         """
         if self.frequency is None:
             return None
+        counted_from = max(self.due_date, self.last_completed or self.due_date)
         return replace(
             self,
             pets=list(self.pets),
-            due_date=self.due_date + REPEAT_INTERVALS[self.frequency],
+            due_date=counted_from + REPEAT_INTERVALS[self.frequency],
             assigned_to=None,
             last_completed=None,
             completed_by=None,
@@ -146,6 +152,17 @@ class Owner:
     # Tasks this person is responsible for. Only changed by Household.
     tasks: list[Task] = field(default_factory=list, repr=False)
 
+    def __post_init__(self) -> None:
+        """Check that home hours, if both are set, start before they end."""
+        if self.home_start is not None and self.home_end is not None:
+            self._check_home_hours(self.home_start, self.home_end)
+
+    @staticmethod
+    def _check_home_hours(start: time, end: time) -> None:
+        """Raise ValueError if start isn't before end."""
+        if start >= end:
+            raise ValueError("Home start time must be before end time.")
+
     def update_availability(self, minutes: Optional[int]) -> None:
         """Change the total care minutes for today (None = whole home window)."""
         if minutes is not None and minutes < 0:
@@ -154,8 +171,7 @@ class Owner:
 
     def update_home_hours(self, start: time, end: time) -> None:
         """Change the time window this person is home."""
-        if start >= end:
-            raise ValueError("Home start time must be before end time.")
+        self._check_home_hours(start, end)
         self.home_start = start
         self.home_end = end
 
@@ -164,9 +180,14 @@ class Owner:
 
         If home hours are not set, they count as always home.
         """
-        if self.home_start is None or self.home_end is None:
-            return True
-        return self.home_start <= t < self.home_end
+        start, end = self.home_window()
+        return start <= _to_minutes(t) < end
+
+    def can_fit(self, start: time, duration_minutes: int) -> bool:
+        """Return True if a task starting at `start` ends before this person leaves."""
+        window_start, window_end = self.home_window()
+        begin = _to_minutes(start)
+        return window_start <= begin and begin + duration_minutes <= window_end
 
     def home_window(self) -> tuple[int, int]:
         """Return (start, end) in minutes since midnight for planning."""
@@ -268,6 +289,8 @@ class Household:
         if name is not None:
             task.name = name
         if duration_minutes is not None:
+            if duration_minutes <= 0:
+                raise ValueError("Duration must be at least 1 minute.")
             task.duration_minutes = duration_minutes
         if priority is not None:
             task.priority = priority
@@ -339,6 +362,10 @@ class Scheduler:
         self.daily_plan: list[ScheduledTask] = []
         self.skipped: list[tuple[Task, str]] = []  # (task, why it was skipped)
         self.warnings: list[str] = []  # overlaps found in the plan; nothing is removed
+        # Booked (start, end) minutes while planning, per member and per pet
+        self._owner_busy: dict[Owner, list[tuple[int, int]]] = {}
+        self._pet_busy: dict[Pet, list[tuple[int, int]]] = {}
+        self._minutes_left: dict[Owner, int] = {}
 
     @staticmethod
     def _sort_key(task: Task) -> tuple:
@@ -393,7 +420,7 @@ class Scheduler:
         How it works (a greedy choice, one task at a time):
             1. Total up how many minutes each member is already booked for.
             2. Go through unassigned tasks in planning order (see _sort_key).
-            3. For a fixed-time task, keep only members home at that time.
+            3. For a fixed-time task, keep only members home for the whole task.
             4. Give the task to the candidate with the most free minutes left,
                then add its duration to that member's total.
 
@@ -412,7 +439,7 @@ class Scheduler:
             candidates = [
                 owner
                 for owner in self.household.members
-                if task.due_time is None or owner.is_home_at(task.due_time)
+                if task.due_time is None or owner.can_fit(task.due_time, task.duration_minutes)
             ]
             if not candidates:
                 continue  # stays unassigned; create_daily_plan reports it
@@ -420,47 +447,61 @@ class Scheduler:
             self.household.assign_task(task, best)
             load[best] += task.duration_minutes
 
-    def _plan_for_owner(self, owner: Owner, day: Optional[date]) -> None:
-        """Place one owner's pending tasks into free time slots in their home window.
+    @staticmethod
+    def _overlaps(slots: list[tuple[int, int]], start: int, end: int) -> bool:
+        """Return True if start-end overlaps any (start, end) slot in slots."""
+        return any(start < b_end and end > b_start for b_start, b_end in slots)
+
+    def _plan_for_owner(self, owner: Owner, day: Optional[date], fixed: bool) -> None:
+        """Place one owner's fixed-time or flexible pending tasks into their home window.
 
         How it works:
-            1. Go through the owner's pending tasks in planning order (see _sort_key).
+            1. Go through the owner's pending tasks in planning order (see _sort_key),
+               keeping only fixed-time tasks (fixed=True) or flexible ones (fixed=False).
             2. Skip a task if it's longer than the owner's remaining minutes today.
             3. Fixed-time task: book it at its due time, unless that's outside
-               the owner's home hours or overlaps something already booked.
+               the owner's home hours or overlaps the owner's other bookings.
+               A clash with a pet's booking is allowed; detect_conflicts warns.
             4. Flexible task: step through the home window 5 minutes at a time
-               and book the first free slot that fits.
+               and book the first slot where the owner and every pet are free.
             5. Each booked task is added to daily_plan; each skipped one is
                added to skipped with the reason.
 
         Args:
             owner: The member whose tasks are being placed.
             day: The day being planned.
+            fixed: True to place fixed-time tasks, False for flexible ones.
         """
         window_start, window_end = owner.home_window()
-        minutes_left = owner.minutes_for_today()
-        busy: list[tuple[int, int]] = []  # (start, end) minutes already booked
+        busy = self._owner_busy[owner]
 
-        def is_free(start: int, end: int) -> bool:
-            """Return True if start-end doesn't overlap any booked slot."""
-            return all(end <= b_start or start >= b_end for b_start, b_end in busy)
+        def is_free(task: Task, start: int, end: int) -> bool:
+            """Return True if the owner and all of the task's pets are free start-end."""
+            if self._overlaps(busy, start, end):
+                return False
+            return not any(
+                self._overlaps(self._pet_busy.get(pet, []), start, end) for pet in task.pets
+            )
 
         for task in sorted(owner.pending_tasks(day), key=self._sort_key):
+            if (task.due_time is not None) != fixed:
+                continue
+            minutes_left = self._minutes_left[owner]
             if task.duration_minutes > minutes_left:
                 self.skipped.append(
                     (task, f"{owner.name} only had {minutes_left} min left today")
                 )
                 continue
 
-            if task.due_time is not None:
+            if fixed:
                 start = _to_minutes(task.due_time)
                 end = start + task.duration_minutes
-                if start < window_start or end > window_end:
+                if not owner.can_fit(task.due_time, task.duration_minutes):
                     self.skipped.append(
                         (task, f"{owner.name} isn't home at {task.due_time:%H:%M}")
                     )
                     continue
-                if not is_free(start, end):
+                if self._overlaps(busy, start, end):
                     self.skipped.append(
                         (task, f"conflicts with another fixed task at {task.due_time:%H:%M}")
                     )
@@ -469,7 +510,7 @@ class Scheduler:
             else:
                 start = window_start
                 while start + task.duration_minutes <= window_end and not is_free(
-                    start, start + task.duration_minutes
+                    task, start, start + task.duration_minutes
                 ):
                     start += 5  # try the next 5-minute slot
                 end = start + task.duration_minutes
@@ -481,7 +522,9 @@ class Scheduler:
                 reason = f"priority {task.priority}, earliest free slot"
 
             busy.append((start, end))
-            minutes_left -= task.duration_minutes
+            for pet in task.pets:
+                self._pet_busy.setdefault(pet, []).append((start, end))
+            self._minutes_left[owner] -= task.duration_minutes
             self.daily_plan.append(ScheduledTask(task, _to_time(start), owner, reason))
 
     def create_daily_plan(self, day: Optional[date] = None) -> list[ScheduledTask]:
@@ -491,7 +534,9 @@ class Scheduler:
             1. Clear daily_plan and skipped, so running it twice doesn't repeat tasks.
             2. Give unassigned tasks to a member (assign_unassigned_tasks).
             3. Report any task still unassigned as skipped.
-            4. Place each member's tasks into their day (_plan_for_owner).
+            4. Place every member's fixed-time tasks, then everyone's flexible
+               tasks (_plan_for_owner), so flexible tasks can work around a
+               pet's fixed bookings with any member.
             5. Sort the plan by start time and check it for clashes
                (detect_conflicts), saving them in warnings.
 
@@ -509,8 +554,13 @@ class Scheduler:
             if task.is_pending_on(day):
                 self.skipped.append((task, "nobody is home at that time"))
 
-        for owner in self.household.members:
-            self._plan_for_owner(owner, day)
+        members = self.household.members
+        self._owner_busy = {owner: [] for owner in members}
+        self._pet_busy = {}
+        self._minutes_left = {owner: owner.minutes_for_today() for owner in members}
+        for fixed in (True, False):
+            for owner in members:
+                self._plan_for_owner(owner, day, fixed)
 
         self.daily_plan.sort(key=lambda item: _to_minutes(item.start_time))
         self.warnings = self.detect_conflicts()
@@ -570,12 +620,14 @@ class Scheduler:
 
         How it works:
             1. Start with every household task.
-            2. If `completed` is given, keep tasks whose done status on `day` matches.
+            2. If `completed` is True, keep tasks done on `day`; if False, keep
+               tasks still to do that day (not done and already due).
             3. If `pet_name` is given, keep tasks involving a pet with that name.
             Filters combine, so both together narrow the list further.
 
         Args:
-            completed: True = only tasks done on `day`; False = only tasks not done.
+            completed: True = only tasks done on `day`; False = only tasks still
+                to do on `day` (a repeating task's future copy is left out).
             pet_name: Only tasks involving this pet (case-insensitive).
             day: The day to check completion for. Defaults to today.
 
@@ -583,8 +635,10 @@ class Scheduler:
             The matching tasks, in the order they were added.
         """
         tasks = self.household.tasks
-        if completed is not None:
-            tasks = [task for task in tasks if task.is_done_on(day) == completed]
+        if completed is True:
+            tasks = [task for task in tasks if task.is_done_on(day)]
+        elif completed is False:
+            tasks = [task for task in tasks if task.is_pending_on(day)]
         if pet_name is not None:
             wanted = pet_name.strip().lower()
             tasks = [

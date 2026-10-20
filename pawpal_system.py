@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, time
+from dataclasses import dataclass, field, replace
+from datetime import date, time, timedelta
 from typing import Optional
 
 # Planning window used when a person hasn't set home hours ("always home").
 DEFAULT_DAY_START = time(8, 0)
 DEFAULT_DAY_END = time(21, 0)
+
+# How far ahead the next copy of a repeating task is due.
+REPEAT_INTERVALS = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
 
 
 def _to_minutes(t: time) -> int:
@@ -34,6 +37,15 @@ class Task:
     assigned_to: Optional[Owner] = field(default=None, repr=False)  # who is responsible
     last_completed: Optional[date] = None  # resets naturally each new day
     completed_by: Optional[Owner] = field(default=None, repr=False)  # who last did it
+    frequency: Optional[str] = None  # "daily", "weekly", or None for a one-time task
+    due_date: Optional[date] = None  # None = undated; repeating tasks default to today
+
+    def __post_init__(self) -> None:
+        """Check frequency and give repeating tasks a due date to count from."""
+        if self.frequency is not None and self.frequency not in REPEAT_INTERVALS:
+            raise ValueError(f"Frequency must be one of {list(REPEAT_INTERVALS)} or None.")
+        if self.frequency is not None and self.due_date is None:
+            self.due_date = date.today()
 
     def mark_complete(self, by: Owner, on: Optional[date] = None) -> None:
         """Record that a household member did this task on the given day (default: today)."""
@@ -43,6 +55,50 @@ class Task:
     def is_done_on(self, day: Optional[date] = None) -> bool:
         """Return True if this task was completed on the given day (default: today)."""
         return self.last_completed == (day or date.today())
+
+    def is_pending_on(self, day: Optional[date] = None) -> bool:
+        """Return True if this task still needs doing on the given day (default: today).
+
+        How it works:
+            1. Undated tasks reset each day: pending unless completed on `day`.
+            2. Dated tasks (e.g. repeating ones) are pending from their due date
+               onward, overdue ones included, until they are completed once.
+
+        Args:
+            day: The day to check. Defaults to today.
+
+        Returns:
+            True if the task should appear in that day's plan.
+        """
+        day = day or date.today()
+        if self.due_date is None:
+            return not self.is_done_on(day)
+        return self.last_completed is None and self.due_date <= day
+
+    def next_occurrence(self) -> Optional[Task]:
+        """Return a fresh, not-yet-done copy due one interval later (None if one-time).
+
+        How it works:
+            1. One-time tasks (frequency None) don't repeat, so return None.
+            2. Otherwise copy the task, moving due_date forward by one day
+               ("daily") or seven days ("weekly") using REPEAT_INTERVALS.
+            3. Clear the completion record so the copy starts out not done.
+
+        The copy has no owner yet; Household.check_off_task adds and assigns it.
+
+        Returns:
+            The next occurrence as a new Task, or None for a one-time task.
+        """
+        if self.frequency is None:
+            return None
+        return replace(
+            self,
+            pets=list(self.pets),
+            due_date=self.due_date + REPEAT_INTERVALS[self.frequency],
+            assigned_to=None,
+            last_completed=None,
+            completed_by=None,
+        )
 
     def pet_priority(self) -> int:
         """Return the most important priority among this task's pets (3 if no pets)."""
@@ -72,7 +128,7 @@ class Pet:
 
     def pending_tasks(self, day: Optional[date] = None) -> list[Task]:
         """Return this pet's tasks that are not done yet on the given day."""
-        return [task for task in self.tasks if not task.is_done_on(day)]
+        return [task for task in self.tasks if task.is_pending_on(day)]
 
 
 @dataclass(eq=False)
@@ -128,7 +184,7 @@ class Owner:
 
     def pending_tasks(self, day: Optional[date] = None) -> list[Task]:
         """Return this person's tasks that are not done yet on the given day."""
-        return [task for task in self.tasks if not task.is_done_on(day)]
+        return [task for task in self.tasks if task.is_pending_on(day)]
 
 
 @dataclass(eq=False)
@@ -222,16 +278,42 @@ class Household:
         """Return household tasks nobody is responsible for yet."""
         return [task for task in self.tasks if task.assigned_to is None]
 
-    def check_off_task(self, task: Task, by: Owner) -> None:
-        """Mark a task done for today; any household member can do this.
+    def check_off_task(
+        self, task: Task, by: Owner, on: Optional[date] = None
+    ) -> Optional[Task]:
+        """Mark a task done (default: today); any household member can do this.
 
-        Refuses if `by` is not a member or the task isn't in this household.
+        How it works:
+            1. Check that `by` is a member and the task belongs to this household.
+            2. Record the completion on the task.
+            3. If the task was already done, stop, so checking off twice doesn't
+               create a second copy.
+            4. For a daily or weekly task, add its next occurrence to the
+               household, kept with the same person.
+
+        Args:
+            task: The household task to mark done.
+            by: The member who did it.
+            on: The day it was done. Defaults to today.
+
+        Returns:
+            The newly added next occurrence, or None if the task doesn't repeat.
+
+        Raises:
+            ValueError: If `by` is not a member or the task isn't in this household.
         """
         if by not in self.members:
             raise ValueError(f"{by.name} is not in the {self.name} household.")
         if task not in self.tasks:
             raise ValueError(f"'{task.name}' is not a {self.name} household task.")
-        task.mark_complete(by)
+        already_done = task.due_date is not None and task.last_completed is not None
+        task.mark_complete(by, on)
+        if already_done:
+            return None  # checking off twice shouldn't create a second copy
+        next_task = task.next_occurrence()
+        if next_task is not None:
+            self.add_task(next_task, assigned_to=task.assigned_to)
+        return next_task
 
 
 @dataclass
@@ -256,26 +338,76 @@ class Scheduler:
         self.household = household
         self.daily_plan: list[ScheduledTask] = []
         self.skipped: list[tuple[Task, str]] = []  # (task, why it was skipped)
+        self.warnings: list[str] = []  # overlaps found in the plan; nothing is removed
 
     @staticmethod
     def _sort_key(task: Task) -> tuple:
-        """Fixed-time tasks first (earliest first), then task priority, then pet priority."""
+        """Return the sort key that orders tasks for planning.
+
+        Python compares tuples item by item, so tasks are ordered by:
+            1. Fixed-time tasks before flexible ones (False sorts before True).
+            2. Earlier due time first.
+            3. Task priority (1 = most important).
+            4. Pet priority, as a final tie-breaker.
+
+        Args:
+            task: The task to build a key for.
+
+        Returns:
+            A tuple (has_no_due_time, due_minutes, task_priority, pet_priority).
+        """
         has_no_due_time = task.due_time is None
         due = _to_minutes(task.due_time) if task.due_time else 0
         return (has_no_due_time, due, task.priority, task.pet_priority())
 
+    def sort_by_time(self, tasks: Optional[list[Task]] = None) -> list[Task]:
+        """Return tasks in clock order, earliest due time first.
+
+        How it works:
+            1. Use the given tasks, or every household task if none are given.
+            2. Sort with a lambda key of (has no due time, "HH:MM" text).
+               Zero-padded "HH:MM" text sorts in the same order as the times.
+            3. Tasks with no due time sort to the end, since True sorts after False.
+
+        Unlike _sort_key, this ignores priority; it's for showing a timeline.
+
+        Args:
+            tasks: The tasks to sort. Defaults to all household tasks.
+
+        Returns:
+            A new sorted list; the original list is not changed.
+        """
+        if tasks is None:
+            tasks = self.household.tasks
+        return sorted(
+            tasks,
+            key=lambda task: (
+                task.due_time is None,
+                task.due_time.strftime("%H:%M") if task.due_time else "",
+            ),
+        )
+
     def assign_unassigned_tasks(self, day: Optional[date] = None) -> None:
         """Give each task nobody owns to the member best able to do it.
 
-        For fixed-time tasks, only members home at that time are considered.
-        Among those, the member with the most free minutes left gets it.
+        How it works (a greedy choice, one task at a time):
+            1. Total up how many minutes each member is already booked for.
+            2. Go through unassigned tasks in planning order (see _sort_key).
+            3. For a fixed-time task, keep only members home at that time.
+            4. Give the task to the candidate with the most free minutes left,
+               then add its duration to that member's total.
+
+        Tasks with no candidate stay unassigned; create_daily_plan reports them.
+
+        Args:
+            day: The day being planned. Defaults to today.
         """
         load = {
             owner: sum(t.duration_minutes for t in owner.pending_tasks(day))
             for owner in self.household.members
         }
         for task in sorted(self.household.unassigned_tasks(), key=self._sort_key):
-            if task.is_done_on(day):
+            if not task.is_pending_on(day):
                 continue
             candidates = [
                 owner
@@ -289,7 +421,22 @@ class Scheduler:
             load[best] += task.duration_minutes
 
     def _plan_for_owner(self, owner: Owner, day: Optional[date]) -> None:
-        """Place one owner's pending tasks into free time slots in their home window."""
+        """Place one owner's pending tasks into free time slots in their home window.
+
+        How it works:
+            1. Go through the owner's pending tasks in planning order (see _sort_key).
+            2. Skip a task if it's longer than the owner's remaining minutes today.
+            3. Fixed-time task: book it at its due time, unless that's outside
+               the owner's home hours or overlaps something already booked.
+            4. Flexible task: step through the home window 5 minutes at a time
+               and book the first free slot that fits.
+            5. Each booked task is added to daily_plan; each skipped one is
+               added to skipped with the reason.
+
+        Args:
+            owner: The member whose tasks are being placed.
+            day: The day being planned.
+        """
         window_start, window_end = owner.home_window()
         minutes_left = owner.minutes_for_today()
         busy: list[tuple[int, int]] = []  # (start, end) minutes already booked
@@ -340,26 +487,111 @@ class Scheduler:
     def create_daily_plan(self, day: Optional[date] = None) -> list[ScheduledTask]:
         """Pick, order, and time tasks, reading each member's own task list.
 
-        Clears daily_plan and skipped first so running it twice doesn't repeat tasks.
-        Fixed-time tasks go first, then the rest by task priority, then pet priority.
+        How it works:
+            1. Clear daily_plan and skipped, so running it twice doesn't repeat tasks.
+            2. Give unassigned tasks to a member (assign_unassigned_tasks).
+            3. Report any task still unassigned as skipped.
+            4. Place each member's tasks into their day (_plan_for_owner).
+            5. Sort the plan by start time and check it for clashes
+               (detect_conflicts), saving them in warnings.
+
+        Args:
+            day: The day to plan. Defaults to today.
+
+        Returns:
+            The scheduled tasks, earliest first. Also saved as daily_plan.
         """
         self.daily_plan = []
         self.skipped = []
         self.assign_unassigned_tasks(day)
 
         for task in self.household.unassigned_tasks():
-            if not task.is_done_on(day):
+            if task.is_pending_on(day):
                 self.skipped.append((task, "nobody is home at that time"))
 
         for owner in self.household.members:
             self._plan_for_owner(owner, day)
 
         self.daily_plan.sort(key=lambda item: _to_minutes(item.start_time))
+        self.warnings = self.detect_conflicts()
         return self.daily_plan
+
+    def detect_conflicts(self) -> list[str]:
+        """Return a warning for each pair of planned tasks that clash.
+
+        Two tasks clash when their times overlap and they share a pet or a
+        person. Tasks that only touch (one ends as the other starts) don't clash.
+
+        How it works:
+            1. Compare every pair of tasks in daily_plan once.
+            2. Skip the pair if their time ranges don't overlap.
+            3. Collect any pets in both tasks, plus the person if both are
+               assigned to the same one.
+            4. If anything is shared, add a warning naming it.
+
+        This only reports; it never changes the plan or raises an error.
+
+        Returns:
+            One message per clashing pair, e.g. "Biscuit double-booked: ...".
+            An empty list means no clashes.
+        """
+        warnings = []
+        for i, first in enumerate(self.daily_plan):
+            first_start = _to_minutes(first.start_time)
+            first_end = first_start + first.task.duration_minutes
+            for second in self.daily_plan[i + 1:]:
+                second_start = _to_minutes(second.start_time)
+                second_end = second_start + second.task.duration_minutes
+                if second_start >= first_end or first_start >= second_end:
+                    continue  # no time overlap
+
+                clashes = [pet.name for pet in first.task.pets if pet in second.task.pets]
+                if first.assigned_to is not None and first.assigned_to is second.assigned_to:
+                    clashes.append(first.assigned_to.name)
+                if clashes:
+                    warnings.append(
+                        f"{' and '.join(clashes)} double-booked: '{first.task.name}' at "
+                        f"{first.start_time:%H:%M} overlaps '{second.task.name}' at "
+                        f"{second.start_time:%H:%M}"
+                    )
+        return warnings
 
     def create_checklist(self, day: Optional[date] = None) -> list[tuple[str, bool]]:
         """Return (task name, done on that day?) for each task in the daily plan."""
         return [(item.task.name, item.task.is_done_on(day)) for item in self.daily_plan]
+
+    def filter_tasks(
+        self,
+        completed: Optional[bool] = None,
+        pet_name: Optional[str] = None,
+        day: Optional[date] = None,
+    ) -> list[Task]:
+        """Return household tasks matching the given filters; None means don't filter on it.
+
+        How it works:
+            1. Start with every household task.
+            2. If `completed` is given, keep tasks whose done status on `day` matches.
+            3. If `pet_name` is given, keep tasks involving a pet with that name.
+            Filters combine, so both together narrow the list further.
+
+        Args:
+            completed: True = only tasks done on `day`; False = only tasks not done.
+            pet_name: Only tasks involving this pet (case-insensitive).
+            day: The day to check completion for. Defaults to today.
+
+        Returns:
+            The matching tasks, in the order they were added.
+        """
+        tasks = self.household.tasks
+        if completed is not None:
+            tasks = [task for task in tasks if task.is_done_on(day) == completed]
+        if pet_name is not None:
+            wanted = pet_name.strip().lower()
+            tasks = [
+                task for task in tasks
+                if any(pet.name.lower() == wanted for pet in task.pets)
+            ]
+        return tasks
 
     def add_to_checklist(
         self, task: Task, due_time: Optional[time] = None, assigned_to: Optional[Owner] = None
@@ -370,7 +602,7 @@ class Scheduler:
 
     def explain_plan(self) -> str:
         """Explain why tasks were included, who they went to, or why they were skipped."""
-        if not self.daily_plan and not self.skipped:
+        if not self.daily_plan and not self.skipped and not self.warnings:
             return "No tasks to plan. Run create_daily_plan() after adding tasks."
 
         lines = [f"Daily plan for the {self.household.name} household:"]
@@ -385,4 +617,8 @@ class Scheduler:
             lines.append("Skipped:")
             for task, why in self.skipped:
                 lines.append(f"  {task.name}: {why}")
+        if self.warnings:
+            lines.append("Warnings:")
+            for warning in self.warnings:
+                lines.append(f"  {warning}")
         return "\n".join(lines)

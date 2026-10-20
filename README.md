@@ -78,12 +78,11 @@ Sample test output:
 
 > Fill in once you've implemented scheduling logic.
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+                    | Feature               | Method(s)                         | Notes |
+| Task sorting |    |priority of task       |scheduler.sort_by_time()           |-------|
+| Filtering |       | filter by pet or task |scheduler.filter_tasks(),Pet.pending_tasks(), Owner.pending_tasks()
+| Conflict handling | alerts when pets have multiple tasks at once, create household allowing multiple members complete/add tasks(more preventative)| detect_conflicts(),assign_unassigned_tasks()
+| Recurring tasks | | repeat reaccuring tasks, check off tasks| task.next_occurrence(), Household.check_off_task()
 
 ## 📸 Demo Walkthrough
 

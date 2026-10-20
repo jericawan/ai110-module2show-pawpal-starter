@@ -43,9 +43,10 @@ Questions that were helpful were the ones that included explainations on why AI 
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
-
 I decided not to do an AI suggestion was at the time availability attribute. In one of the tests it stated that "Jo" waw available from 7-9 am but the available_minutes was 60 minutes. I decided against this and have it reflect the same amount of time because it logically did not make sense. 
+- How did you evaluate or verify what the AI suggested? I would evaluate the AI suggestions by looking on the local site to see if the changes were properly implemented. In cases where the UI is not implemented, I would ask AI to create test cases to determine if the code is producing correct results. 
+
+
 
 ## 4. Testing and Verification
 

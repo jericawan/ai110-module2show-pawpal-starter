@@ -889,3 +889,71 @@ def test_fixed_tasks_for_the_same_pet_still_warn_instead_of_moving(home):
 
     assert [item.start_time for item in plan] == [time(8, 0), time(8, 15)]
     assert len(scheduler.warnings) == 1
+
+
+# --- find_clashes (warning when a task is added) ---
+
+
+def test_find_clashes_flags_duplicate_at_same_time(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    walk_again = Task("Walk", 30, 1, pets=[biscuit])
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    household.add_task(walk_again, due_time=time(8, 0), assigned_to=jo)
+
+    assert Scheduler(household).find_clashes(walk_again) == [walk]
+
+
+def test_find_clashes_flags_partial_overlap_for_same_person(home):
+    household, jo, _, biscuit, mochi = home
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    feed = Task("Feed", 10, 1, pets=[mochi])
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    household.add_task(feed, due_time=time(8, 20), assigned_to=jo)
+
+    assert Scheduler(household).find_clashes(feed) == [walk]
+
+
+def test_find_clashes_ignores_back_to_back_tasks(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    bath = Task("Bath", 20, 1, pets=[biscuit])
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    household.add_task(bath, due_time=time(8, 30), assigned_to=jo)
+
+    assert Scheduler(household).find_clashes(bath) == []
+
+
+def test_find_clashes_ignores_different_pet_and_person(home):
+    household, jo, sam, biscuit, mochi = home
+    sam.update_home_hours(time(7, 0), time(22, 0))
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    feed = Task("Feed", 10, 1, pets=[mochi])
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    household.add_task(feed, due_time=time(8, 0), assigned_to=sam)
+
+    assert Scheduler(household).find_clashes(feed) == []
+
+
+def test_find_clashes_ignores_untimed_tasks(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit])
+    play = Task("Play", 30, 1, pets=[biscuit])
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    household.add_task(play, assigned_to=jo)
+
+    scheduler = Scheduler(household)
+
+    assert scheduler.find_clashes(play) == []
+    assert scheduler.find_clashes(walk) == []
+
+
+def test_find_clashes_skips_finished_repeating_task_but_checks_its_next_copy(home):
+    household, jo, _, biscuit, _ = home
+    walk = Task("Walk", 30, 1, pets=[biscuit], frequency="daily", due_date=DAY)
+    household.add_task(walk, due_time=time(8, 0), assigned_to=jo)
+    next_walk = household.check_off_task(walk, by=jo, on=DAY)
+    walk_again = Task("Walk", 30, 1, pets=[biscuit])
+    household.add_task(walk_again, due_time=time(8, 0), assigned_to=jo)
+
+    assert Scheduler(household).find_clashes(walk_again) == [next_walk]

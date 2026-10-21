@@ -110,6 +110,19 @@ if st.button("Add task"):
     household.add_task(task, due_time=due_time, assigned_to=owner)
     st.success(f"Added '{task_title}' for {pet_name}.")
 
+    # [AI-added] Warn right away if the new task overlaps another timed task
+    # for the same pet or person; the task is still added
+    for other in Scheduler(household).find_clashes(task):
+        same_task = other.name.strip().lower() == task.name.strip().lower()
+        kind = "Possible duplicate" if same_task else "Time clash"
+        message = (
+            f"{kind}: '{task.name}' at {task.due_time:%I:%M %p} overlaps "
+            f"'{other.name}' ({', '.join(p.name for p in other.pets)}) "
+            f"at {other.due_time:%I:%M %p}."
+        )
+        st.warning(f"⚠️ {message}")
+        st.toast(message, icon="⚠️")
+
 # [AI-added] Show tasks from the Household instead of the old st.session_state.tasks list
 if household.tasks:
     st.write("Current tasks:")

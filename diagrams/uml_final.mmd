@@ -1,0 +1,107 @@
+classDiagram
+    %% Keep this file updated so it matches your final implementation.
+    %% Priority (Task and Pet): int, 1 = most important (higher number = lower priority)
+    %% REPEAT_INTERVALS (module constant): daily = 1 day, weekly = 7 days
+
+    class Household {
+        +str name
+        +list~Owner~ members
+        +list~Pet~ pets
+        +list~Task~ tasks
+        +add_member(owner: Owner) None
+        +add_pet(pet: Pet) None
+        +add_task(task: Task, due_time: time, assigned_to: Owner) None
+        +assign_task(task: Task, owner: Owner) None
+        +remove_task(task: Task) None
+        +edit_task(task: Task, ...) None
+        +unassigned_tasks() list~Task~
+        +check_off_task(task: Task, by: Owner, on: date) Task
+    }
+
+    class Owner {
+        +str name
+        +time home_start
+        +time home_end
+        +int available_minutes
+        +list~Task~ tasks
+        +update_availability(minutes: int) None
+        +update_home_hours(start: time, end: time) None
+        +is_home_at(t: time) bool
+        +can_fit(start: time, duration_minutes: int) bool
+        +home_window() tuple
+        +minutes_for_today() int
+        +pending_tasks(day: date) list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str breed
+        +str gender
+        +int age
+        +date birthday
+        +list~str~ special_needs
+        +int priority
+        +list~Task~ tasks
+        +change_priority(new_priority: int) None
+        +pending_tasks(day: date) list~Task~
+    }
+
+    class Task {
+        +str name
+        +int duration_minutes
+        +int priority
+        +list~Pet~ pets
+        +time due_time
+        +Owner assigned_to
+        +date last_completed
+        +Owner completed_by
+        +str frequency
+        +date due_date
+        +mark_complete(by: Owner, on: date) None
+        +is_done_on(day: date) bool
+        +is_pending_on(day: date) bool
+        +next_occurrence() Task
+        +pet_priority() int
+    }
+
+    class ScheduledTask {
+        +Task task
+        +time start_time
+        +Owner assigned_to
+        +str reason
+        +end_time() time
+    }
+
+    class Scheduler {
+        +Household household
+        +list~ScheduledTask~ daily_plan
+        +list~tuple~ skipped
+        +list~str~ warnings
+        +sort_by_time(tasks: list~Task~) list~Task~
+        +assign_unassigned_tasks(day: date) None
+        +create_daily_plan(day: date) list~ScheduledTask~
+        +detect_conflicts() list~str~
+        +find_clashes(task: Task) list~Task~
+        +filter_tasks(completed: bool, pet_name: str, day: date) list~Task~
+        +create_checklist(day: date) list~tuple~
+        +add_to_checklist(task: Task, ...) None
+        +explain_plan() str
+        -_sort_key(task: Task) tuple
+        -_plan_for_owner(owner: Owner, day: date, fixed: bool) None
+    }
+
+    Household "1" --> "*" Owner : members
+    Household "1" --> "*" Pet : shares
+    Household "1" --> "*" Task : manages
+    Household ..> Task : check_off_task adds next copy
+    Owner "1" --> "*" Task : responsible for
+    Pet "1" --> "*" Task : requires
+    Task "*" --> "*" Pet : involves
+    Task "*" --> "0..1" Owner : assigned_to / completed_by
+    Task ..> Task : next_occurrence creates
+    Scheduler --> Household : plans for
+    Scheduler ..> Owner : reads tasks, assigns unassigned
+    Scheduler ..> Pet : avoids double-booking
+    Scheduler "1" --> "*" ScheduledTask : builds
+    ScheduledTask --> Task : wraps
+    ScheduledTask --> Owner : assigned_to

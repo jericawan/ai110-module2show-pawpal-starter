@@ -606,6 +606,44 @@ class Scheduler:
                     )
         return warnings
 
+    def find_clashes(self, task: Task) -> list[Task]:
+        """Return the other household tasks that overlap this task's time slot.
+
+        How it works:
+            1. Untimed tasks can move, so they never clash; return [].
+            2. Skip the task itself, untimed tasks, and dated tasks already done
+               (they won't come back; a repeating task's next copy is checked instead).
+            3. Keep tasks whose time ranges overlap and that share a pet or
+               the same assigned person. Back-to-back tasks don't overlap.
+
+        Unlike detect_conflicts, this works on the task list, so it can warn
+        as soon as a task is added, before any plan is built.
+
+        Args:
+            task: The task to check, usually one just added.
+
+        Returns:
+            The clashing tasks, in the order they were added.
+        """
+        if task.due_time is None:
+            return []
+        start = _to_minutes(task.due_time)
+        end = start + task.duration_minutes
+        clashes = []
+        for other in self.household.tasks:
+            if other is task or other.due_time is None:
+                continue
+            if other.due_date is not None and other.last_completed is not None:
+                continue
+            other_start = _to_minutes(other.due_time)
+            if not (start < other_start + other.duration_minutes and end > other_start):
+                continue
+            shares_pet = any(pet in other.pets for pet in task.pets)
+            same_person = task.assigned_to is not None and task.assigned_to is other.assigned_to
+            if shares_pet or same_person:
+                clashes.append(other)
+        return clashes
+
     def create_checklist(self, day: Optional[date] = None) -> list[tuple[str, bool]]:
         """Return (task name, done on that day?) for each task in the daily plan."""
         return [(item.task.name, item.task.is_done_on(day)) for item in self.daily_plan]

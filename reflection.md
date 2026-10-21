@@ -22,12 +22,15 @@ I did make a lot of changes during implementation. One in particular is changing
 **a. Constraints and priorities**
 
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
+Constraints my scheduler considers is timing and priority, as it follows somewhat of a first come first serve basis. First it considers priority then time, and if they both are the same then it will decide based on which entered the systm first.
 - How did you decide which constraints mattered most?
-
+I decided to go with priority especially with pets who requires priority whether if its due to its breed or personality. 
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+A tradeoff my scheduler makes is greedness, it can only manage one task at a time. 
 - Why is that tradeoff reasonable for this scenario?
+This tradeoff was reasonable on this scenerio because it allows the application to run/think quick. It provides a clear plan for the user, similiarily to a notepad if someone organized your tasks without knowing you at all. 
 
 ---
 
@@ -53,12 +56,18 @@ I decided not to do an AI suggestion was at the time availability attribute. In 
 **a. What you tested**
 
 - What behaviors did you test?
+I tested the behaviors of adding a task, if warning signals will occur or not, generate a schedule based off priority/time. 
 - Why were these tests important?
+I believe that these tests are important to determine if the main components of the application is working. It tests scenerios like cases where multiple tasks occur at once, or when multiple people in the household complete a task.
+
 
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
+I would say that I was somewhat confident that my scheduler work, I definetly took time to make sure AI was changing the code
+to my preferences while being logically correct. 
 - What edge cases would you test next if you had more time?
+Edge cases I would want to test is if there are multiple tasks at the same time and priority and to find methods to fix it. Another edge case I would test is letting others in the household (multiple owners) add or complete tasks. 
 
 ---
 
@@ -67,11 +76,14 @@ I decided not to do an AI suggestion was at the time availability attribute. In 
 **a. What went well**
 
 - What part of this project are you most satisfied with?
+I am most satisfied with the warnings of the overlapping tasks. 
 
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
+I would improve the household implementation, I felt that the logic made sense but I wasn't sure how it would be visually represented. 
 
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+One important thing I learned about designing systems is the different levels of relationships the classes may have with each other and how it is important to specify what access each class has. For example in the orginal diagram there was a case where pets were able to make tasks which logically did not make sense.
